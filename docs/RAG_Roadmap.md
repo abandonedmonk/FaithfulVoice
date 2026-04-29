@@ -2,7 +2,8 @@
 
 > **Stack:** LangGraph · Qdrant · `unstructured` · `sentence-transformers` / `FinLang` · Python  
 > **Timeline:** 2 days (aggressive but doable for a demo)  
-> **Pattern:** Corrective RAG (CRAG) over SEC 10-K / 10-Q filings
+> **Pattern:** Corrective RAG (CRAG) over SEC 10-K / 10-Q filings  
+> **Format:** HTML (EDGAR HTM filings — preferred over PDF for accuracy and speed)
 
 ---
 
@@ -14,7 +15,7 @@ Get everything running locally before touching data.
 
 - Docker Qdrant running locally
 - Python virtual env with all deps
-- EDGAR filings downloaded (3–5 companies, 10-K)
+- EDGAR filings downloaded (3–5 companies, 10-K) as HTML packages
 
 ### Steps
 
@@ -25,74 +26,154 @@ docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant
 
 # Python deps
 pip install qdrant-client langgraph langchain langchain-openai \
-    unstructured[pdf,html] sentence-transformers openai \
-    fastembed pandas rich python-dotenv
+    unstructured[html] sentence-transformers openai \
+    fastembed pandas lxml beautifulsoup4 rich python-dotenv requests
 ```
+
+> Note: `unstructured[html]` replaces `unstructured[pdf,html]` — no PDF pipeline needed.
 
 ### EDGAR Filing Download
 
-Go to https://www.sec.gov/cgi-bin/browse-edgar → pick 3–5 companies → download 10-K HTML or PDF.  
-Suggested: Apple (AAPL), Microsoft (MSFT), JPMorgan (JPM) — mix of tech + finance.
+EDGAR filings come as full submission packages (ZIP with multiple HTM files). Do **not** just download a single PDF — the HTML package is richer and cleaner.
+
+```python
+import requests, json
+
+def get_filing_package(cik: str, accession_number: str):
+    """Fetch the full submission index for a filing."""
+    acc_clean = accession_number.replace("-", "")
+    index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{accession_number}-index.json"
+    index = requests.get(index_url, headers={"User-Agent": "yourname@email.com"}).json()
+    
+    # Only process the primary 10-K document — skip exhibits (EX-*) and XBRL viewer (R*.htm)
+    primary = [f for f in index["directory"]["item"]
+               if f["type"] == "10-K" and not f["name"].startswith("R")]
+    return primary
+```
+
+Suggested companies: Apple (AAPL, CIK 320193), Microsoft (MSFT, CIK 789019), JPMorgan (JPM, CIK 19617) — mix of tech + finance.
 
 ### Deliverable
 
 - `docker ps` shows Qdrant at port 6333
-- `data/raw/` folder with 3–5 filings
+- `data/raw/` folder with 3–5 `.htm` filing files (primary 10-K documents only)
 
 ---
 
 ## Phase 1 — Document Parsing & Intelligent Chunking _(~3 hours, Day 1)_
 
-This is the hardest and most important phase. SEC filings are not clean text — they have dense tables, XBRL tags, nested HTML, footnotes. Plain `split("\n")` chunking will destroy context. See [`CHUNKING_STRATEGY.md`](./CHUNKING_STRATEGY.md) for full detail.
+This is the hardest and most important phase. SEC HTML filings contain dense tables, inline XBRL tags, and hierarchical Item structure. Plain `split("\n")` chunking will destroy context. See [`CHUNKING_STRATEGY.md`](./CHUNKING_STRATEGY.md) for full detail.
 
 ### Goals
 
-- Parse raw filings into structured elements (text, tables, titles)
+- Pre-clean XBRL inline tags from raw HTML before parsing
+- Parse cleaned HTML into structured elements (text, tables, titles)
+- Detect sections using EDGAR's `<a name="itemX">` anchors — more reliable than page heuristics
 - Chunk by element type, not fixed token windows
+- Extract tables via `pandas.read_html()` for complex nested tables
 - Generate table summaries via LLM
-- Attach rich metadata to every chunk
+- Attach rich metadata (including `anchor_id`, `accession_number`, `source_url`) to every chunk
 
-### Pipeline
+### Pre-Cleaning Pipeline
+
+SEC EDGAR HTML filings use inline iXBRL tags that wrap financial values. These must be stripped before `unstructured` sees the file, or they produce dirty element text.
+
+```python
+from bs4 import BeautifulSoup
+import re
+
+def clean_edgar_html(filepath: str) -> str:
+    with open(filepath, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "lxml")
+
+    # Strip XBRL namespace tags (ix:nonfraction, ix:nonnumeric, etc.) but keep inner text
+    for tag in soup.find_all(re.compile(r"^ix:")):
+        tag.unwrap()
+
+    # Remove hidden XBRL context/schema blocks entirely
+    for tag in soup.find_all("div", style=re.compile(r"display:\s*none", re.I)):
+        tag.decompose()
+
+    # Save cleaned HTML for unstructured
+    cleaned_path = filepath.replace(".htm", "_clean.htm")
+    with open(cleaned_path, "w", encoding="utf-8") as f:
+        f.write(str(soup))
+    return cleaned_path
+```
+
+### Parsing & Section Detection Pipeline
 
 ```
-Raw HTML/PDF
+Raw EDGAR HTM
     ↓
-unstructured.partition_html() / partition_pdf()
+clean_edgar_html()          ← strips XBRL tags, hidden divs
+    ↓
+extract_sections_from_html() ← maps <a name="item1a"> → "Item 1A. Risk Factors"
+    ↓
+partition_html(cleaned_path, skip_headers_and_footers=True)
     ↓  (returns: NarrativeText, Table, Title, ListItem, ...)
 Element-type routing:
-    - NarrativeText → section-aware recursive chunking (~512 tokens, 100 overlap)
-    - Table         → LLM summary + raw markdown preserved
-    - Title         → used as parent context header only
+    - NarrativeText → section-aware recursive chunking (~512 tokens child, ~2000 parent)
+    - Table         → pd.read_html() extraction → LLM summary + raw markdown preserved
+    - Title         → updates current_section tracker (anchor-based when available)
+    - Header/Footer → discard
     ↓
 Metadata enrichment:
-    { company, ticker, year, filing_type, section, element_type, page }
+    { company, ticker, year, filing_type, section, anchor_id,
+      element_type, chunk_index, parent_chunk_id,
+      accession_number, source_url, cik, htm_filename }
     ↓
 Chunk store: List[dict]
 ```
 
+**Section detection using HTML anchors:**
+
+```python
+SECTION_MAP = {
+    "item1":  "Business Overview",
+    "item1a": "Risk Factors",
+    "item1b": "Unresolved Staff Comments",
+    "item2":  "Properties",
+    "item7":  "MD&A",
+    "item7a": "Market Risk",
+    "item8":  "Financial Statements",
+    "item9a": "Controls and Procedures",
+}
+
+def extract_anchor_sections(soup) -> dict:
+    """Returns {anchor_id: human_label} from EDGAR <a name="..."> tags."""
+    sections = {}
+    for anchor in soup.find_all("a", attrs={"name": True}):
+        key = anchor["name"].lower().replace(" ", "")
+        if key in SECTION_MAP:
+            sections[key] = SECTION_MAP[key]
+    return sections
+```
+
 ### Key Code Files
 
-- `src/parser.py` — wraps `unstructured`, routes element types
-- `src/chunker.py` — section-aware chunking + table summarization
-- `src/metadata.py` — metadata extraction from filename + filing header
+- `src/cleaner.py` — XBRL stripping and hidden-element removal
+- `src/parser.py` — wraps `unstructured`, anchor-based section detection, element-type routing
+- `src/chunker.py` — section-aware chunking + `pd.read_html()` table extraction + LLM summarization
+- `src/metadata.py` — metadata assembly (CIK, accession number, source URL, anchor ID)
 
 ### Deliverable
 
-- `data/processed/chunks.jsonl` — all chunks with metadata
-- Quick stats: how many chunks per filing, per section, per element type
+- `data/processed/chunks.jsonl` — all chunks with full metadata
+- Quick stats: chunks per filing, per section (`anchor_id`), per element type
 
 ---
 
 ## Phase 2 — Qdrant Ingestion with Hybrid Indexing _(~2 hours, Day 1)_
 
-Store chunks with **both dense and sparse vectors** so retrieval can combine semantic + keyword search. See [`CHUNKING_STRATEGY.md`](./CHUNKING_STRATEGY.md) for full rationale.
+Store chunks with **both dense and sparse vectors** so retrieval can combine semantic + keyword search. The expanded metadata schema (with `anchor_id`) also enables precise section-level filtering at query time. See [`CHUNKING_STRATEGY.md`](./CHUNKING_STRATEGY.md) for full rationale.
 
 ### Goals
 
 - Create Qdrant collection with named dense + sparse vector configs
 - Embed text chunks using a finance-aware embedding model
-- Store table summaries as dense; raw table markdown in payload
-- Insert all chunks with full metadata as Qdrant payload
+- Store table summaries as the dense embedding; raw table markdown in payload
+- Insert all chunks with full metadata (including `anchor_id`, `source_url`) as Qdrant payload
 
 ### Collection Schema
 
@@ -113,17 +194,25 @@ client.create_collection(
 ```json
 {
   "text": "...",
-  "table_markdown": "...", // only for table chunks
-  "summary": "...", // LLM-generated, for table chunks
+  "table_markdown": "...",          // only for table chunks — extracted via pd.read_html()
+  "summary": "...",                 // LLM-generated, for table chunks — this is what gets embedded
   "company": "Apple Inc.",
   "ticker": "AAPL",
+  "cik": "320193",
   "year": 2023,
   "filing_type": "10-K",
+  "accession_number": "0000320193-23-000106",
   "section": "Risk Factors",
+  "anchor_id": "item1a",            // EDGAR HTML anchor — enables exact section filtering
   "element_type": "NarrativeText | Table",
-  "page": 14
+  "chunk_index": 4,
+  "parent_chunk_id": "abc123",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/320193/.../aapl-20230930.htm",
+  "htm_filename": "aapl-20230930.htm"
 }
 ```
+
+> `accession_number` + `anchor_id` together reconstruct a direct deep-link to the exact section in the SEC EDGAR viewer — invaluable for answer citations.
 
 ### Key Code Files
 
@@ -133,13 +222,13 @@ client.create_collection(
 ### Deliverable
 
 - Qdrant collection `sec_filings` populated
-- Sanity check: 5 manual queries returning expected chunks
+- Sanity check: 5 manual queries returning expected chunks with correct `anchor_id` values
 
 ---
 
 ## Phase 3 — LangGraph CRAG Agent _(~4 hours, Day 2)_
 
-Build the multi-node graph that drives the Q&A loop. The pattern is **Corrective RAG**: retrieve → grade → answer or retry.
+Build the multi-node graph that drives the Q&A loop. The pattern is **Corrective RAG**: retrieve → grade → answer or retry. The Query Analyzer now also maps user intent to `anchor_id` for hard section filtering before semantic search.
 
 ### Graph Nodes
 
@@ -148,13 +237,15 @@ Build the multi-node graph that drives the Q&A loop. The pattern is **Corrective
      ↓
 ┌─────────────────┐
 │  Query Analyzer │  → classifies intent: financial? risk? operations?
-│                 │    also generates query expansion / HyDE hypothesis
+│                 │    maps intent → anchor_id (e.g. "risk" → "item1a")
+│                 │    extracts entities (ticker, year)
+│                 │    generates HyDE hypothesis for qualitative queries
 └────────┬────────┘
          ↓
 ┌─────────────────┐
 │    Retriever    │  → Hybrid search (dense + BM25 + RRF fusion)
 │                 │    Qdrant prefetch + FusionQuery(RRF)
-│                 │    Filter by: company, year, section (from metadata)
+│                 │    Filter by: ticker, year, anchor_id (hard metadata filter)
 └────────┬────────┘
          ↓
 ┌─────────────────┐
@@ -166,7 +257,7 @@ Build the multi-node graph that drives the Q&A loop. The pattern is **Corrective
   ↓               ↓
 ┌──────┐    ┌──────────────┐
 │Answer│    │ Query Rewriter│ → rewrites query → back to Retriever
-│ Node │    └──────────────┘
+│ Node │    └──────────────┘   (drops anchor_id filter on retry)
 └──────┘
 ```
 
@@ -175,8 +266,22 @@ Build the multi-node graph that drives the Q&A loop. The pattern is **Corrective
 **Query Analyzer Node**
 
 ```python
-# Classifies: {"intent": "risk_factors", "entities": ["AAPL", "2023"], "section_hint": "Risk Factors"}
-# Generates HyDE: a hypothetical passage the answer might appear in
+INTENT_TO_ANCHOR = {
+    "risk_factors":      "item1a",
+    "business_overview": "item1",
+    "financial_data":    "item8",
+    "mda":               "item7",
+    "market_risk":       "item7a",
+    "controls":          "item9a",
+}
+
+# Classifies: {
+#   "intent": "risk_factors",
+#   "anchor_id": "item1a",          ← maps intent to EDGAR section anchor
+#   "entities": ["AAPL", "2023"],
+#   "is_qualitative": True          ← determines whether to use HyDE
+# }
+# If qualitative: generate HyDE hypothesis passage
 ```
 
 **Retriever Node**
@@ -189,7 +294,11 @@ client.query_points(
         Prefetch(query=dense_vec, using="dense", limit=20),
     ],
     query=FusionQuery(fusion=Fusion.RRF),
-    query_filter=Filter(must=[...company/year conditions...]),
+    query_filter=Filter(must=[
+        FieldCondition(key="ticker", match=MatchValue(value="AAPL")),
+        FieldCondition(key="year",   match=MatchValue(value=2023)),
+        FieldCondition(key="anchor_id", match=MatchValue(value="item1a")),  # ← anchor filter
+    ]),
     limit=8
 )
 ```
@@ -205,13 +314,17 @@ client.query_points(
 
 ```python
 # Prompt with all relevant chunks as context
-# Produces cited answer: "According to Apple's 2023 10-K, Risk Factors section..."
+# Cites using: company, year, section label, and direct EDGAR URL
+# e.g. "According to Apple's 2023 10-K, Risk Factors (Item 1A)..."
+# Source URL reconstructed from accession_number + anchor_id in payload
 ```
 
 **Query Rewriter Node**
 
 ```python
-# If grader found 0 relevant chunks: rewrite query, signal retry
+# If grader found 0 relevant chunks:
+#   - First retry: rewrite query, keep anchor_id filter
+#   - Second retry: rewrite query, DROP anchor_id filter (broaden scope)
 # Max 2 retries to avoid infinite loop
 ```
 
@@ -220,7 +333,7 @@ client.query_points(
 ```python
 class AgentState(TypedDict):
     question: str
-    query_analysis: dict
+    query_analysis: dict       # includes anchor_id, entities, is_qualitative
     retrieved_chunks: list
     graded_chunks: list
     answer: str
@@ -231,11 +344,11 @@ class AgentState(TypedDict):
 
 - `src/graph.py` — LangGraph StateGraph definition
 - `src/nodes/` — one file per node
-- `src/retriever.py` — Qdrant hybrid search wrapper
+- `src/retriever.py` — Qdrant hybrid search wrapper (with anchor_id filter support)
 
 ### Deliverable
 
-- `python src/graph.py "What are Apple's main risk factors in 2023?"` returns a cited answer
+- `python src/graph.py "What are Apple's main risk factors in 2023?"` returns a cited answer with source URL
 - Graph trace visible (LangGraph's built-in logging)
 
 ---
@@ -247,9 +360,9 @@ Wrap the agent in a simple Streamlit interface for demo purposes.
 ### Goals
 
 - Text input for question
-- Sidebar: filter by company, year, section
-- Answer panel with source citations
-- Show retrieved chunks (expandable)
+- Sidebar: filter by company, year, section (mapped to `anchor_id` values)
+- Answer panel with source citations (including clickable EDGAR deep-links)
+- Show retrieved chunks (expandable, with section label + anchor)
 
 ### Key Code Files
 
@@ -258,7 +371,7 @@ Wrap the agent in a simple Streamlit interface for demo purposes.
 ### Deliverable
 
 - `streamlit run app.py` shows working UI
-- Can demo: type question → see graph reasoning → see answer with citations
+- Citations include clickable links to exact SEC EDGAR filing sections
 
 ---
 
@@ -267,8 +380,9 @@ Wrap the agent in a simple Streamlit interface for demo purposes.
 Make it presentable.
 
 - [ ] Add 3–5 canned "example questions" in the UI
-- [ ] Log graph trace steps visibly (Retriever → Grader → Answer path)
-- [ ] Handle edge cases: no results found, query out of scope
+- [ ] Log graph trace steps visibly (Analyzer → Retriever → Grader → Answer path)
+- [ ] Show which `anchor_id` filter was applied per query
+- [ ] Handle edge cases: no results found, query out of scope, anchor filter loosened on retry
 - [ ] Add a `README.md` with setup instructions
 
 ---
@@ -278,22 +392,23 @@ Make it presentable.
 ```
 sec-agent/
 ├── data/
-│   ├── raw/             # Downloaded EDGAR filings
+│   ├── raw/             # Downloaded EDGAR .htm filings (primary 10-K docs only)
 │   └── processed/       # chunks.jsonl
 ├── src/
-│   ├── parser.py
-│   ├── chunker.py
-│   ├── metadata.py
+│   ├── cleaner.py       # XBRL stripping + hidden-element removal  ← NEW
+│   ├── parser.py        # unstructured wrapper + anchor-based section detection
+│   ├── chunker.py       # section-aware chunking + pd.read_html() + LLM table summaries
+│   ├── metadata.py      # metadata assembly (CIK, accession, anchor_id, source_url)
 │   ├── embedder.py
 │   ├── ingest.py
-│   ├── retriever.py
+│   ├── retriever.py     # hybrid search with anchor_id filter support
 │   ├── graph.py
 │   └── nodes/
-│       ├── analyzer.py
+│       ├── analyzer.py  # intent → anchor_id mapping + HyDE
 │       ├── retriever_node.py
 │       ├── grader.py
-│       ├── answer.py
-│       └── rewriter.py
+│       ├── answer.py    # citations with EDGAR deep-links
+│       └── rewriter.py  # drops anchor_id on second retry
 ├── app.py               # Streamlit UI
 ├── .env                 # OPENAI_API_KEY etc.
 ├── ROADMAP.md
@@ -305,19 +420,19 @@ sec-agent/
 
 ## Day-by-Day Summary
 
-| Time     | Task                                |
-| -------- | ----------------------------------- |
-| Day 1 AM | Phase 0 + Phase 1 (setup + parsing) |
-| Day 1 PM | Phase 2 (Qdrant ingestion + verify) |
-| Day 2 AM | Phase 3 (LangGraph agent)           |
-| Day 2 PM | Phase 4 + 5 (UI + polish)           |
+| Time     | Task                                                          |
+| -------- | ------------------------------------------------------------- |
+| Day 1 AM | Phase 0 + Phase 1 (setup + XBRL cleaning + HTML parsing)     |
+| Day 1 PM | Phase 2 (Qdrant ingestion with anchor_id metadata + verify)  |
+| Day 2 AM | Phase 3 (LangGraph agent with anchor-filtered retrieval)      |
+| Day 2 PM | Phase 4 + 5 (UI with EDGAR deep-links + polish)              |
 
 ---
 
 ## Demo Questions to Prepare
 
-1. _"What are Apple's main risk factors in their 2023 10-K?"_
-2. _"How did Microsoft's revenue change year-over-year?"_
-3. _"What does JPMorgan say about credit risk exposure?"_
-4. _"Compare liquidity disclosures between Apple and Microsoft."_
-5. _"What is Apple's capital allocation strategy?"_
+1. _"What are Apple's main risk factors in their 2023 10-K?"_ → anchor filter: `item1a`
+2. _"How did Microsoft's revenue change year-over-year?"_ → anchor filter: `item8`
+3. _"What does JPMorgan say about credit risk exposure?"_ → anchor filter: `item7`
+4. _"Compare liquidity disclosures between Apple and Microsoft."_ → anchor filter: `item7`
+5. _"What is Apple's capital allocation strategy?"_ → anchor filter: `item7` or `item8`
