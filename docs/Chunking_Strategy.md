@@ -1,4 +1,4 @@
-# 📄 SEC Filing Chunking & Retrieval Strategy
+# SEC Filing Chunking & Retrieval Strategy
 
 > Why plain RAG fails on SEC filings — and exactly what to do instead.  
 > **This strategy is optimised for EDGAR HTML filings (HTM format), which are preferred over PDF.**
@@ -9,14 +9,14 @@
 
 SEC filings (10-K, 10-Q) are some of the worst documents for standard chunking:
 
-| Problem                                                         | Impact on RAG                                                         |
+| Problem | Impact on RAG |
 | --------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Dense financial tables (balance sheets, income statements)      | Fixed-size chunking cuts tables mid-row, producing garbage embeddings |
-| Thousands of tokens per section (MD&A alone can be 20k+ tokens) | Context overflow, lost in the middle                                  |
-| Repeated boilerplate (legal disclaimers, signatures)            | Pollutes retrieval with irrelevant noise                              |
-| Numerical precision matters ("$2.3B" vs "$23B")                 | Dense embeddings are bad at exact numbers                             |
-| Hierarchical structure (Item 1A → sub-sections → footnotes)     | Flat chunking destroys hierarchy                                      |
-| Inline iXBRL tags wrapping every financial value                | Dirty text confuses embeddings — must be stripped before parsing      |
+| Dense financial tables (balance sheets, income statements) | Fixed-size chunking cuts tables mid-row, producing garbage embeddings |
+| Thousands of tokens per section (MD&A alone can be 20k+ tokens) | Context overflow, lost in the middle |
+| Repeated boilerplate (legal disclaimers, signatures) | Pollutes retrieval with irrelevant noise |
+| Numerical precision matters ("$2.3B" vs "$23B") | Dense embeddings are bad at exact numbers |
+| Hierarchical structure (Item 1A → sub-sections → footnotes) | Flat chunking destroys hierarchy |
+| Inline iXBRL tags wrapping every financial value | Dirty text confuses embeddings — must be stripped before parsing |
 
 **The fix is a multi-layer strategy: pre-clean XBRL, parse by HTML structure, chunk by element type, retrieve with hybrid search.**
 
@@ -26,14 +26,14 @@ SEC filings (10-K, 10-Q) are some of the worst documents for standard chunking:
 
 EDGAR HTML filings are superior to PDF for RAG in every measurable way:
 
-| Dimension            | PDF                                      | HTML (EDGAR HTM)                                  |
+| Dimension | PDF | HTML (EDGAR HTM) |
 | -------------------- | ---------------------------------------- | ------------------------------------------------- |
-| Parsing speed        | Slow — requires `strategy="hi_res"` OCR | ~10× faster — no OCR needed                      |
-| Table extraction     | Fragile — layout-based heuristics        | Reliable — `pd.read_html()` reads DOM directly   |
-| Section detection    | Page-number heuristics, brittle          | `<a name="item1a">` anchors — exact and stable   |
-| Text cleanliness     | OCR artifacts, ligature errors           | Clean Unicode text                                |
-| Structure awareness  | None — flat page stream                  | `<h1>`–`<h4>` hierarchy preserved by `unstructured` |
-| Source deep-linking  | Page number only                         | `accession_number` + `anchor_id` → direct SEC URL |
+| Parsing speed | Slow — requires `strategy="hi_res"` OCR | ~10× faster — no OCR needed |
+| Table extraction | Fragile — layout-based heuristics | Reliable — `pd.read_html()` reads DOM directly |
+| Section detection | Page-number heuristics, brittle | **Text-based detection (see below)** |
+| Text cleanliness | OCR artifacts, ligature errors | Clean Unicode text |
+| Structure awareness | None — flat page stream | Section spans preserved by `unstructured` |
+| Source deep-linking | Page number only | `accession_number` + `anchor_id` → direct SEC URL |
 
 **Always download the primary 10-K HTM document from the EDGAR full submission package, not the PDF.**
 
@@ -60,13 +60,18 @@ def clean_edgar_html(filepath: str) -> str:
     for tag in soup.find_all("div", style=re.compile(r"display:\s*none", re.I)):
         tag.decompose()
 
+    # Decompose the ix:header block (contains XBRL context metadata)
+    ix_header = soup.find("ix:header")
+    if ix_header:
+        ix_header.decompose()
+
     cleaned_path = filepath.replace(".htm", "_clean.htm")
     with open(cleaned_path, "w", encoding="utf-8") as f:
         f.write(str(soup))
     return cleaned_path
 ```
 
-This step is **mandatory** — skip it and every financial figure in your embeddings will be wrapped in garbage XML.
+**This step is mandatory** — skip it and every financial figure in your embeddings will be wrapped in garbage XML.
 
 ---
 
@@ -85,436 +90,365 @@ elements = partition_html(
 )
 ```
 
-`unstructured` returns a list of typed elements. HTML structure means these are more accurate than PDF equivalents:
+`unstructured` returns typed elements:
 
-| Element Type        | What it is                                        |
+| Element Type | What it is |
 | ------------------- | ------------------------------------------------- |
-| `Title`             | Section header — maps to `<h1>`–`<h4>` in HTML   |
-| `NarrativeText`     | Prose paragraphs                                  |
-| `Table`             | Detected table — supplement with `pd.read_html()` |
-| `ListItem`          | Bullet/numbered list items                        |
-| `Header` / `Footer` | Page metadata — discard                           |
-| `PageBreak`         | Structural marker — discard                       |
+| `NarrativeText` | Prose paragraphs (most common) |
+| `Text` | Short text blocks, headers |
+| `Table` | Detected table — supplement with `pd.read_html()` |
+| `ListItem` | Bullet/numbered list items |
+| `Header` / `Footer` | Page metadata — discard |
+| `PageBreak` | Structural marker — discard |
+| `Title` | **Rarely produced** — don't rely on it |
 
-### Section Detection: Anchor-Based (HTML Only)
+> **Critical Finding:** Modern iXBRL filings produce **0 Title elements**. Section headers are `<span>` tags with inline styles, not `<h1>`-`<<h6>` tags.
 
-EDGAR uses consistent `<a name="itemX">` anchors for every Item. Use these instead of relying on `Title` element text matching — they are guaranteed to be stable across filings.
+---
+
+## Section Detection: Text-Based (NOT Anchor-Based)
+
+> **The docs assumed `<a name="itemX">` anchors exist — they don't.** Modern iXBRL filings use a completely different structure.
+
+### What Actually Happens
+
+Modern EDGAR HTM filings use this structure:
+
+1. **TOC links:** `<a href="#i13eac97307cc485c971e826acbda8be7_13">Item 1.</a>` (inside `<span>`)
+2. **Section markers:** `<div id="i13eac97307cc485c971e826acbda8be7_13">`  — empty anchor markers
+3. **Actual headers:** `<span style="color:#76b900">Item 1A. Risk Factors</span>` (NVIDIA green) or `<span style="color:#0000ff">Item 1A.</span>` (blue)
+
+### How to Detect Sections (Correct Approach)
 
 ```python
-SECTION_MAP = {
-    "item1":  "Business Overview",
-    "item1a": "Risk Factors",
-    "item1b": "Unresolved Staff Comments",
-    "item2":  "Properties",
-    "item3":  "Legal Proceedings",
-    "item7":  "MD&A",
-    "item7a": "Market Risk",
-    "item8":  "Financial Statements",
-    "item9a": "Controls and Procedures",
-}
+import re
 
-def extract_anchor_sections(soup) -> dict:
-    """Returns {anchor_id: section_label} for EDGAR Item anchors."""
-    sections = {}
-    for anchor in soup.find_all("a", attrs={"name": True}):
-        key = anchor["name"].lower().replace(" ", "").replace(".", "")
-        if key in SECTION_MAP:
-            sections[key] = SECTION_MAP[key]
-    return sections
+SECTION_PATTERNS = [
+    (re.compile(r"^item\s*1\b", re.I), "item1", "Business Overview"),
+    (re.compile(r"^item\s*1a\b", re.I), "item1a", "Risk Factors"),
+    (re.compile(r"^item\s*1b\b", re.I), "item1b", "Unresolved Staff Comments"),
+    (re.compile(r"^item\s*1c\b", re.I), "item1c", "Cybersecurity"),
+    (re.compile(r"^item\s*2\b", re.I), "item2", "Properties"),
+    (re.compile(r"^item\s*3\b", re.I), "item3", "Legal Proceedings"),
+    (re.compile(r"^item\s*7\b", re.I), "item7", "MD&A"),
+    (re.compile(r"^item\s*7a\b", re.I), "item7a", "Market Risk"),
+    (re.compile(r"^item\s*8\b", re.I), "item8", "Financial Statements"),
+    (re.compile(r"^item\s*9a\b", re.I), "item9a", "Controls and Procedures"),
+    (re.compile(r"^item\s*15\b", re.I), "item15", "Exhibits and Schedules"),
+    # ... add all 16 Items as needed
+]
+
+BOILERPLATE_PATTERNS = [
+    re.compile(r"pursuant to the requirements of the securities exchange act", re.I),
+    re.compile(r"incorporated herein by reference", re.I),
+    re.compile(r"see exhibit index", re.I),
+    re.compile(r"^table of contents$", re.I),
+    re.compile(r"^item\s*\d+[a-z]?\.$", re.I),  # TOC stub entries
+]
+
+def _detect_section(text: str) -> tuple[str, str] | None:
+    """Returns (anchor_id, section_label) if text matches an Item pattern."""
+    for pattern, anchor_id, section_label in SECTION_PATTERNS:
+        if pattern.search(text.strip()):
+            return anchor_id, section_label
+    return None
+
+def should_skip(text: str) -> bool:
+    """Filter out boilerplate and short junk."""
+    text = text.strip()
+    if len(text) < 50:
+        return True
+    if re.match(r"^\$?[\d,\.]+[bmk]?$", text):  # XBRL numeric artifact
+        return True
+    return any(p.search(text) for p in BOILERPLATE_PATTERNS)
 ```
 
-Track the current anchor as you iterate elements, and stamp it onto each chunk's metadata as `anchor_id`. This is the most important metadata field for filtered retrieval.
+### How It Works in Practice
+
+1. Iterate through `unstructured` elements in order
+2. For each element's text, check if it matches `"Item X."` pattern
+3. If match → update `current_anchor_id` and `current_section`
+4. Stamp all subsequent elements with current anchor_id until a new match
 
 ---
 
 ## Layer 2 — Chunking Strategy: Route by Element Type
 
-> **Key insight from research (Jimeno-Yepes et al., 2024):** Element-type-based chunking outperforms paragraph-level chunking on financial documents by a significant margin. Structure is signal.
+> **Key insight from research:** Element-type-based chunking outperforms paragraph-level chunking on financial documents. Structure is signal.
 
-### 2a. Text Chunks — Section-Aware Recursive Splitting
+### 2a. Text Chunks — Parent-Child Recursive Splitting
 
 For `NarrativeText` elements, use a **parent-child chunking** approach:
 
-- **Parent chunk**: ~1,500–2,000 tokens — used for context window injection
-- **Child chunk**: ~256–512 tokens — used for embedding & retrieval
+- **Parent chunk**: ~2,000 tokens — used for context window injection
+- **Child chunk**: ~512 tokens — used for embedding & retrieval
 
-Why? Small chunks embed with higher precision. But at retrieval time you return the _parent_ for more context. This avoids the "retrieved fragment is too short to be useful" problem.
+Why? Small chunks embed with higher precision. But at retrieval time you return the _parent_ for more context.
 
 ```python
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 parent_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
 child_splitter  = RecursiveCharacterTextSplitter(chunk_size=512,  chunk_overlap=100)
-
-# Store child for retrieval, parent for generation context
 ```
 
-**Grouping by section:** In HTML, use the `anchor_id` detected from `<a name="...">` tags rather than raw `Title` text. This is more reliable and gives you a stable key for Qdrant filtering.
+**Skip these sections** (mostly boilerplate/exhibits):
 
 ```python
-current_section = "Unknown"
-current_anchor  = None
-
-for element in elements:
-    if element.type == "Title":
-        # Try to match against known anchor labels
-        current_section = element.text
-    # anchor_id updated separately from the soup traversal above
-
-    elif element.type == "NarrativeText":
-        metadata["section"]   = current_section
-        metadata["anchor_id"] = current_anchor   # ← stable EDGAR key
+SKIP_ANCHORS = {
+    "cover",      # Cover page
+    "item4",     # Mine Safety
+    "item6",     # Reserved
+    "item9",     # Accountant Disagreements
+    "item9b",    # Other Information
+    "item9c",    # Foreign Jurisdiction
+    "item10",     # Directors/Officers
+    "item11",     # Executive Compensation
+    "item14",     # Principal Accountant Fees
+    "item16",     # 10-K Summary
+}
 ```
 
-**What to skip:** Discard `Header`, `Footer`, elements under 50 characters, and HTML-specific boilerplate: table-of-contents entries (short `Title` elements that are just "Item 1A."), navigation `<div>` blocks, and legal signature pages.
+### 2b. Table Chunks — Dual Representation
 
-```python
-BOILERPLATE_PATTERNS = [
-    r"pursuant to the requirements of the securities exchange act",
-    r"incorporated herein by reference",
-    r"see exhibit index",
-    r"^table of contents$",
-    r"^item \d+[a-z]?\.$",   # TOC stub entries
-]
+Tables are the hardest problem. Strategy:
 
-def should_skip(element) -> bool:
-    text = element.text.strip().lower()
-    if len(text) < 50:
-        return True
-    if re.match(r"^\$?[\d,\.]+[bmk]?$", text):  # XBRL numeric artifact
-        return True
-    return any(re.search(p, text, re.I) for p in BOILERPLATE_PATTERNS)
-```
-
-### 2b. Table Chunks — `pd.read_html()` + LLM Summary + Raw Preservation
-
-Tables are the hardest problem. A balance sheet embedded as raw text embeds poorly — the model sees "Assets 15,234 Liabilities 8,891 Equity 6,343" with no structural meaning.
-
-**For HTML filings, use `pd.read_html()` instead of relying solely on `unstructured`'s Table elements.** HTML tables have explicit DOM structure; pandas reads them with full column/row semantics, including merged cells and multi-level headers that `unstructured` can miss.
+1. Extract table text from `unstructured` Table element
+2. Try `pd.read_html()` on raw HTML for markdown
+3. Store: `text` (summary/ellipsis) + `table_markdown` (raw, for context)
 
 ```python
 import pandas as pd
 
-def extract_tables_from_section(html_fragment: str) -> list:
-    """Extract all tables from a section's HTML as DataFrames."""
+def extract_table_markdown(table_element_text: str) -> str:
+    """Try to extract markdown from table element text."""
     try:
-        return pd.read_html(html_fragment, flavor="lxml")
-    except ValueError:
-        return []  # no tables found
-
-def df_to_markdown(df: pd.DataFrame) -> str:
-    return df.to_markdown(index=False)
+        # table_element_text may contain HTML table
+        if "<table" in table_element_text:
+            dfs = pd.read_html(table_element_text, flavor="lxml")
+            if dfs:
+                return dfs[0].to_markdown(index=False)
+    except Exception:
+        pass
+    return ""  # Return empty if no table found
 ```
-
-**Strategy: dual representation**
-
-```
-HTML Table element
-    ↓
-    ├── pd.read_html() → DataFrame → markdown
-    │       ↓
-    │   LLM Summary → "Apple's 2023 balance sheet shows total assets of $352B,
-    │                   total liabilities of $290B, and shareholders' equity of $62B.
-    │                   Key items include cash of $61B and long-term debt of $98B."
-    │                   → This is what gets EMBEDDED
-    │
-    └── Raw table markdown (from df.to_markdown())
-        → Preserved in Qdrant payload as `table_markdown`
-        → This is what gets INJECTED into the LLM context
-```
-
-```python
-def summarize_table(df: pd.DataFrame, company: str, year: int,
-                    section: str, llm) -> str:
-    table_md = df_to_markdown(df)
-    prompt = f"""You are analyzing a table from {company}'s {year} 10-K filing.
-Section: {section}
-Describe this table in 2-3 sentences, including all key financial figures.
-
-Table:
-{table_md}
-
-Summary:"""
-    return llm.invoke(prompt)
-```
-
-**Why this works:** You embed the _natural language summary_ (semantically rich), but inject the _raw table markdown_ into the LLM context (numerically precise). Best of both worlds.
 
 ### 2c. Metadata — Attach to Every Chunk
 
-Rich metadata enables **filtered retrieval** in Qdrant. For HTML filings, `anchor_id` is the most powerful filter field — it maps directly to EDGAR's Item structure and is far more precise than a free-text section name.
-
 ```python
 {
-    "text": "...",                          # chunk text (or LLM summary for tables)
-    "table_markdown": "...",                # raw table markdown (tables only)
-    "company": "Apple Inc.",
-    "ticker": "AAPL",
-    "cik": "320193",                        # SEC CIK — stable company identifier
-    "year": 2023,
-    "quarter": None,                        # for 10-Q filings
-    "filing_type": "10-K",
-    "accession_number": "0000320193-23-000106",  # EDGAR unique filing ID
-    "section": "Item 1A. Risk Factors",     # human-readable label
-    "anchor_id": "item1a",                  # EDGAR anchor — use for Qdrant filtering
-    "element_type": "NarrativeText",        # or "Table"
+    "text": "...",                    # chunk text (child for embedding)
+    "parent_text": "...",             # parent context (for LLM injection)
+    "table_markdown": "...",         # raw table markdown (tables only)
+    "company": "NVIDIA Corporation",
+    "ticker": "NVDA",
+    "cik": "0001045810",
+    "year": 2024,
+    "quarter": None,               # None for 10-K, 1-4 for 10-Q
+    "filing_type": "10K",
+    "section": "Risk Factors",
+    "anchor_id": "item1a",       # ← PRIMARY FILTER KEY
+    "element_type": "NarrativeText",  # or "Table"
     "chunk_index": 4,
     "parent_chunk_id": "abc123",
-    "source_url": "https://www.sec.gov/Archives/edgar/data/320193/.../aapl-20230930.htm",
-    "htm_filename": "aapl-20230930.htm"
+    "chunk_id": "def456",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000029/nvda-20240128.htm#item1a",
+    "htm_filename": "nvda-20240128.htm"
 }
 ```
-
-> `accession_number` + `anchor_id` together reconstruct a direct link to the exact Item section in the SEC EDGAR viewer — use this for citations in the Answer node.
 
 ---
 
 ## Layer 3 — Embedding: Finance-Aware Models
 
-Standard `all-MiniLM-L6-v2` is fine for general text but underperforms on financial jargon ("liquidity covenant", "EBITDA margin", "material weakness").
-
-### Recommended Models (in order of preference for a demo)
-
-| Model                                     | Dims | Notes                                              |
+| Model | Dims | Notes |
 | ----------------------------------------- | ---- | -------------------------------------------------- |
-| `BAAI/bge-base-en-v1.5`                   | 768  | Strong MTEB scores, good finance performance, free |
-| `intfloat/e5-base-v2`                     | 768  | Solid all-rounder, handles financial text well     |
-| `text-embedding-3-large` (OpenAI)         | 3072 | Best quality, costs money, good for demo polish    |
-| `FinLang/finance-embeddings-investopedia` | 768  | Finance-specific, smaller community, worth testing |
-
-**For this demo:** Use `BAAI/bge-base-en-v1.5` — free, strong, and widely supported.
+| `BAAI/bge-base-en-v1.5` | 768 | Strong MTEB scores, good finance performance, free |
+| `intfloat/e5-base-v2` | 768 | Solid all-rounder, handles financial text well |
+| `text-embedding-3-large` (OpenAI) | 3072 | Best quality, costs money, good for demo polish |
 
 ```python
 from fastembed import TextEmbedding, SparseTextEmbedding
 
 dense_model  = TextEmbedding("BAAI/bge-base-en-v1.5")
-sparse_model = SparseTextEmbedding("Qdrant/bm25")   # or "prithivida/Splade_PP_en_v1"
+sparse_model = SparseTextEmbedding("Qdrant/bm25")
 ```
 
 ---
 
 ## Layer 4 — Qdrant Schema: Multi-Vector Collection
 
-Store **both dense and sparse vectors** in a single collection. Qdrant natively supports this.
-
 ```python
 from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance, VectorParams, SparseVectorParams, Modifier
-)
+from qdrant_client.models import Distance, VectorParams, SparseVectorParams, Modifier
 
 client = QdrantClient("localhost", port=6333)
 
 client.create_collection(
     collection_name="sec_filings",
     vectors_config={
-        "dense": VectorParams(
-            size=768,                    # match your embedding model
-            distance=Distance.COSINE
-        )
+        "dense": VectorParams(size=768, distance=Distance.COSINE)
     },
     sparse_vectors_config={
-        "sparse": SparseVectorParams(
-            modifier=Modifier.IDF        # enables BM25-style IDF weighting
-        )
+        "sparse": SparseVectorParams(modifier=Modifier.IDF)
     }
 )
 ```
 
-**Upsert with both vectors:**
-
-```python
-from qdrant_client.models import PointStruct, SparseVector
-import uuid
-
-points = []
-for chunk in chunks:
-    dense_vec  = list(dense_model.embed([chunk["text"]]))[0].tolist()
-    sparse_out = list(sparse_model.embed([chunk["text"]]))[0]
-
-    points.append(PointStruct(
-        id=str(uuid.uuid4()),
-        vector={
-            "dense":  dense_vec,
-            "sparse": SparseVector(
-                indices=sparse_out.indices.tolist(),
-                values=sparse_out.values.tolist()
-            )
-        },
-        payload=chunk  # full metadata dict including anchor_id, source_url, etc.
-    ))
-
-client.upsert(collection_name="sec_filings", points=points)
-```
-
 ---
 
-## Layer 5 — Retrieval: Hybrid Search with Anchor-Filtered RRF Fusion
-
-At query time, run dense + sparse in parallel, fuse with **Reciprocal Rank Fusion (RRF)**, and apply a hard `anchor_id` filter derived from the query's detected intent.
-
-> **Why RRF?** Hybrid search (dense + BM25) achieves 91% recall@10 vs 78% for dense alone — a 17% gain. For financial documents with specific numeric identifiers and tickers, this gap is even larger.
-
-> **Why `anchor_id` filter?** SEC filings have millions of tokens. Filtering to the correct Item before semantic search narrows the candidate pool by ~90%, dramatically improving both precision and latency.
+## Layer 5 — Retrieval: Hybrid Search with Anchor-Filtered RRF
 
 ```python
-from qdrant_client.models import (
-    Prefetch, FusionQuery, Fusion, Filter, FieldCondition, MatchValue
-)
+from qdrant_client.models import Prefetch, FusionQuery, Fusion, Filter, FieldCondition, MatchValue, SparseVector
 
-# Maps user query intent to EDGAR anchor — set by Query Analyzer node
 INTENT_TO_ANCHOR = {
     "risk_factors":      "item1a",
     "business_overview": "item1",
     "financial_data":    "item8",
-    "mda":               "item7",
-    "market_risk":       "item7a",
-    "controls":          "item9a",
+    "mda":           "item7",
+    "market_risk":     "item7a",
+    "controls":       "item9a",
 }
 
-def hybrid_search(
-    query: str,
-    ticker: str = None,
-    year: int = None,
-    anchor_id: str = None,   # ← EDGAR section anchor from Query Analyzer
-    top_k: int = 8
-):
+def hybrid_search(query: str, ticker: str = None, anchor_id: str = None, top_k: int = 8):
     conditions = []
     if ticker:
-        conditions.append(FieldCondition(key="ticker",    match=MatchValue(value=ticker)))
-    if year:
-        conditions.append(FieldCondition(key="year",      match=MatchValue(value=year)))
+        conditions.append(FieldCondition(key="ticker", match=MatchValue(value=ticker)))
     if anchor_id:
         conditions.append(FieldCondition(key="anchor_id", match=MatchValue(value=anchor_id)))
 
     query_filter = Filter(must=conditions) if conditions else None
-
     dense_q  = list(dense_model.embed([query]))[0].tolist()
     sparse_q = list(sparse_model.embed([query]))[0]
 
     results = client.query_points(
         collection_name="sec_filings",
         prefetch=[
-            Prefetch(
-                query=SparseVector(
-                    indices=sparse_q.indices.tolist(),
-                    values=sparse_q.values.tolist()
-                ),
-                using="sparse",
-                limit=20
-            ),
+            Prefetch(query=SparseVector(indices=sparse_q.indices.tolist(), values=sparse_q.values.tolist()), using="sparse", limit=20),
             Prefetch(query=dense_q, using="dense", limit=20)
         ],
         query=FusionQuery(fusion=Fusion.RRF),
         query_filter=query_filter,
         limit=top_k
     )
-
     return [r.payload for r in results.points]
 ```
 
-**On retry (CRAG rewrite):** Drop the `anchor_id` filter to broaden scope. The Query Rewriter node should signal this explicitly in the agent state.
-
 ---
 
-## Layer 6 — Advanced Retrieval Additions (Do If Time Allows)
+## How to Run: Complete Pipeline
 
-### 6a. Contextual Retrieval (Anthropic technique)
+### Prerequisites
 
-Before embedding each chunk, prepend a short context header generated by an LLM. For HTML filings, include the `anchor_id` label — it's a stable, meaningful prefix.
+```bash
+# Create conda environment
+conda create -n faithfulvoice python=3.11
+conda activate faithfulvoice
+
+# Install dependencies
+pip install qdrant-client langchain-text-splitters \
+    beautifulsoup4 lxml pandas requests \
+    fastembed unstructured
+```
+
+### Step 1: Download Filings
+
+```bash
+# Download all 40 filings (10 companies × 4 types)
+python scripts/download_filings.py
+
+# Or specific tickers
+python scripts/download_filings.py --tickers NVDA AMD INTC
+```
+
+Output: `data/raw/NVDA_2024_10K.htm`, etc. (36 files, ~120 MB total)
+
+### Step 2: Clean + Parse + Chunk (One Filing)
 
 ```python
-context_prompt = f"""Filing: {company} {year} 10-K
-Section: {section} ({anchor_id})
-Chunk {i} of {total}:
-{chunk_text}"""
-# Embed this enriched version instead of raw chunk text
+from src.cleaner import clean_edgar_html
+from src.chunker import chunk_filing
+from dataclasses import asdict
+
+# Single filing pipeline
+raw_path = "data/raw/NVDA_2024_10K.htm"
+cleaned_path = clean_edgar_html(raw_path)
+chunks = chunk_filing(cleaned_path, raw_path)
+
+# Write to JSONL
+import json
+with open("data/processed/NVDA_2024_10K_chunks.jsonl", "w") as f:
+    for c in chunks:
+        f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
 ```
 
-This adds ~15% retrieval accuracy on financial benchmarks by reducing embedding ambiguity.
-
-### 6b. Anchor-Based Pre-Filtering (HTML Advantage)
-
-The Query Analyzer maps intent to `anchor_id` before any vector search runs. This is a hard Qdrant filter — not a similarity score adjustment. It reduces the effective search space to a single Item section, which is usually under 5% of the total collection.
+### Step 3: Batch Process All Filings
 
 ```python
-# Query: "What are Apple's risk factors in 2023?"
-# → extract: { ticker: "AAPL", year: 2023, anchor_id: "item1a" }
-# → Qdrant filter applied before RRF fusion
+from pathlib import Path
+from src.cleaner import clean_edgar_html
+from src.chunker import chunk_filing
+import json
+
+raw_dir = Path("data/raw")
+processed_dir = Path("data/processed")
+processed_dir.mkdir(exist_ok=True)
+
+for htm_file in raw_dir.glob("*_10K.htm"):
+    print(f"Processing {htm_file.name}...")
+    cleaned = clean_edgar_html(htm_file)
+    chunks = chunk_filing(cleaned, htm_file)
+    
+    out_file = processed_dir / f"{htm_file.stem}_chunks.jsonl"
+    with open(out_file, "w") as f:
+        for c in chunks:
+            f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
+    print(f"  → {len(chunks)} chunks")
 ```
 
-This is the single biggest retrieval improvement available when using HTML over PDF — PDF has no equivalent of stable section anchors.
-
-### 6c. HyDE (Hypothetical Document Embeddings)
-
-Instead of embedding the raw user question, ask an LLM to generate a _hypothetical answer passage_, then embed that. Questions embed differently from answers in vector space; HyDE bridges this gap.
+### Step 4: Embed + Upsert to Qdrant
 
 ```python
-hypothetical = llm.invoke(f"Write a short passage from a 10-K that would answer: {question}")
-query_vec = embed(hypothetical)  # embed the hypothetical answer, not the question
-```
-
-**Note:** Use HyDE only for qualitative questions ("how does X manage risk?"). Skip it for quantitative ones ("what was revenue in Q3?") — HyDE provides no benefit for precise numerical lookups and adds latency.
-
-### 6d. Parent-Child Retrieval in Practice
-
-Store child chunk IDs in Qdrant payload. After retrieval, look up the parent chunk from a local dict (keyed by `parent_chunk_id`) or a second Qdrant collection. Inject _parent_ content into LLM context for fuller context, while keeping child embeddings for precise matching.
-
-### 6e. EDGAR Deep-Link Citations (HTML Only)
-
-Because every chunk carries `accession_number` and `anchor_id`, the Answer node can reconstruct a direct URL to the exact Item section in the SEC EDGAR filing viewer:
-
-```python
-def build_edgar_url(cik: str, accession_number: str, anchor_id: str) -> str:
-    acc_clean = accession_number.replace("-", "")
-    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/"
-    # The primary HTM filename is available in chunk payload as htm_filename
-    return f"{base}{{htm_filename}}#{anchor_id}"
-
-# e.g. https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm#item1a
-```
-
-This makes citations in the answer verifiable with a single click — a significant demo advantage.
-
----
-
-## Summary Cheatsheet
-
-```
-Raw EDGAR HTM
-    → clean_edgar_html()              # strip iXBRL tags, hidden XBRL blocks
-    → extract_anchor_sections()       # map <a name="item1a"> → section labels
-    → partition_html(cleaned, ...)    # unstructured element extraction
-    → element-type routing:
-         NarrativeText → recursive split (512 child / 2000 parent) + anchor_id stamp
-         Table         → pd.read_html() → LLM summary (embed) + markdown (payload)
-         Title         → update section tracker
-         Header/Footer → discard
-    → metadata tagging (ticker, year, cik, accession_number, anchor_id, source_url, ...)
-    → Qdrant upsert: dense (bge-base) + sparse (BM25/IDF)
-
-Query
-    → Query Analyzer: extract ticker, year → map intent to anchor_id → HyDE if qualitative
-    → Qdrant hybrid search: RRF fusion, filtered by ticker + year + anchor_id
-    → Relevance Grader: drop irrelevant chunks
-    → Context assembly: inject parent chunks + raw table markdown
-    → LLM Answer: cited with section label + EDGAR deep-link URL
+# (See Layer 4 code above)
+# Batch embed all chunks, upsert to Qdrant collection
 ```
 
 ---
 
 ## What NOT to Do
 
-| ❌ Don't                                          | ✅ Do instead                                              |
+| ❌ Don't | ✅ Do instead |
 | ------------------------------------------------- | ---------------------------------------------------------- |
-| Use `partition_pdf` on EDGAR filings              | Use `partition_html` on the primary HTM document           |
-| Parse raw HTM without stripping XBRL first        | Run `clean_edgar_html()` before any parsing                |
-| Detect sections by page number or Title text only | Use `<a name="itemX">` anchors — stable across all filings |
-| Use `unstructured` alone for complex tables       | Use `pd.read_html()` for precise DataFrame extraction      |
-| Embed raw table text                              | LLM-summarize tables, embed summary, store markdown        |
-| Use only dense vector search                      | Hybrid: dense + BM25 with RRF                              |
-| Filter only by company/year                       | Add `anchor_id` filter — the highest-precision filter available |
-| Ignore `accession_number` in metadata             | Store it — enables verifiable EDGAR deep-link citations    |
-| Use `all-MiniLM-L6-v2` for finance                | Use `BAAI/bge-base-en-v1.5` minimum                        |
-| Embed user question directly for qualitative queries | Use HyDE — then skip it for numerical queries            |
-| Drop `anchor_id` filter on all retries            | Loosen filters progressively: keep anchor on retry 1, drop on retry 2 |
+| Use `partition_pdf` on EDGAR filings | Use `partition_html` on the primary HTM document |
+| Parse raw HTM without stripping XBRL first | Run `clean_edgar_html()` before any parsing |
+| **Look for `<a name="itemX">` anchors** | **Use text-based section detection** (see Layer 1) |
+| Rely on Title elements from `unstructured` | **Match "Item X." patterns in element text** |
+| Use only dense vector search | Hybrid: dense + BM25 with RRF |
+| Filter only by company/year | Add `anchor_id` filter — highest-precision filter |
+| Use `all-MiniLM-L6-v2` for finance | Use `BAAI/bge-base-en-v1.5` minimum |
+| Ignore `anchor_id` in metadata | Store it — enables section filtering |
+
+---
+
+## Summary Cheatsheet
+
+```
+Raw EDGAR HTM (data/raw/NVDA_2024_10K.htm)
+    → clean_edgar_html()              # strip ix:* tags, ix:header, hidden divs
+    → partition_html()              # unstructured element extraction
+    → text-based section detection (regex "Item X.")
+    → element-type routing:
+         NarrativeText → recursive split (512 child / 2000 parent) + anchor_id stamp
+         Table      → dual rep (text + markdown)
+         short/junk → filtered by should_skip()
+    → metadata tagging (ticker, year, cik, anchor_id, source_url, ...)
+    → Qdrant upsert: dense (bge-base) + sparse (BM25)
+
+Query
+    → Query Analyzer: extract ticker → map intent to anchor_id
+    → Qdrant hybrid search: RRF, filtered by ticker + anchor_id
+    → Relevance Grader: drop irrelevant chunks
+    → Context assembly: inject parent chunks + table markdown
+    → LLM Answer: cited with section label + EDGAR deep-link URL
+```
