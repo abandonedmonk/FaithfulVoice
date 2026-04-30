@@ -1,0 +1,30 @@
+﻿Running partition_html...
+Total elements: 1189
+
+Element type counts:
+  NarrativeText: 550
+  Text: 470
+  ListItem: 101
+  Table: 66
+  Image: 2
+
+First 15 elements:
+  [0] Text: 'Table of Contents'
+  [1] Text: 'UNITED STATES'
+  [2] Text: 'SECURITIES AND EXCHANGE COMMISSION'
+  [3] Text: 'Washington, D.C. 20549'
+  [4] Text: '____________________________________________________________________________________________'
+  [5] Text: 'FORM 10-K'
+python : Traceback (most recent call last):
+At line:1 char:20
++ ... ctivate fv; python "D:\Code\PROJECTS\FaithfulVoice\scripts\test_unstr ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "D:\Code\PROJECTS\FaithfulVoice\scripts\test_unstructured.py", line 29, in <module>
+    print(f"  [{i}] {t}: '{text}'")
+  File "C:\Users\anshu\miniconda3\envs\fv\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2612' in position 14: character maps to <undefined>
