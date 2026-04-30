@@ -1,0 +1,40 @@
+models:
+  dense_embedding: "BAAI/bge-base-en-v1.5"
+  sparse_embedding: "Qdrant/bm25"
+  verifier: "cross-encoder/nli-deberta-v3-base"
+  generator: "meta-llama/Llama-3.1-8B-Instruct"
+  table_summarizer: "gpt-4o-mini"
+
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection: "sec_filings"
+  dense_dim: 768
+
+chunking:
+  parent_size: 2000
+  parent_overlap: 200
+  child_size: 512
+  child_overlap: 100
+
+verification:
+  threshold: 0.7
+
+retrieval:
+  top_k: 8
+  prefetch_limit: 20
+
+intents:
+  risk_factors: "item1a"
+  business_overview: "item1"
+  financial_data: "item8"
+  mda: "item7"
+  market_risk: "item7a"
+  controls: "item9a"
+  legal: "item3"
+  cybersecurity: "item1c"
+  properties: "item2"
+
+api:
+  fireworks_base_url: "https://api.fireworks.ai/inference/v1"
+  fireworks_model: "accounts/fireworks/models/llama-v3p1-8b-instruct"
