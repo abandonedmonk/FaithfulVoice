@@ -219,3 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 data-repo/
+
+# Local planning notes
+TODO.local.md

@@ -1,15 +1,76 @@
+# FaithfulVoice + imported PRISM GraphRAG configuration.
+# Secrets belong in .env; see .env.example.
+
 models:
   dense_embedding: "BAAI/bge-base-en-v1.5"
   sparse_embedding: "Qdrant/bm25"
   verifier: "cross-encoder/nli-deberta-v3-base"
   generator: "meta-llama/Llama-3.1-8B-Instruct"
   table_summarizer: "gpt-4o-mini"
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 qdrant:
   host: "localhost"
   port: 6333
-  collection: "sec_filings"
-  dense_dim: 768
+  collection: "prism_filings"
+  dense_dim: 384
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  entity_extraction_model: "Qwen/Qwen2.5-14B-Instruct"
+  community_report_model: "Qwen/Qwen2.5-14B-Instruct"
+  vector_index_name: "entity_embeddings"
+  vector_dimensions: 384
+  vector_similarity: "cosine"
+
+llm:
+  base_url: "https://anshujena007--prism-llm-serve-serve.modal.run/v1"
+  model: "Qwen/Qwen2.5-14B-Instruct"
+
+vision:
+  base_url: "https://anshujena007--prism-vision-serve-serve.modal.run/v1"
+  model: "meta-llama/Llama-3.2-11B-Vision-Instruct"
+
+embedding:
+  base_url: "https://anshujena007--prism-embed-serve-serve.modal.run"
+  model: "BAAI/bge-small-en-v1.5"
+
+rerank:
+  base_url: "https://anshujena007--prism-rerank-serve-serve.modal.run"
+  model: "BAAI/bge-reranker-base-v2.0"
+
+fireworks:
+  base_url: "https://api.fireworks.ai/inference/v1"
+  model: "accounts/fireworks/models/gpt-oss-120b"
+
+groq:
+  base_url: "https://api.groq.com/openai/v1"
+
+table:
+  images_dir: "data/processed/tables"
+  render_width: 1200
+
+services:
+  embedding_service_url: "http://localhost:8001"
+  reranker_service_url: "http://localhost:8002"
+  llm_endpoint: "https://api.fireworks.ai/inference/v1"
+
+langfuse:
+  host: "http://localhost:3000"
+
+aws:
+  region: "ap-south-1"
+  s3_docs_bucket: "prism-docs-local"
+  s3_snapshots_bucket: "prism-snapshots-local"
+
+ingestion:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  graph_dir: "data/graphs"
+  graph_batch_size: 8
+  graph_concurrency: 8
+  filings_glob: "*.htm"
 
 chunking:
   parent_size: 2000

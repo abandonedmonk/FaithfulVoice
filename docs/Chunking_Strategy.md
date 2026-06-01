@@ -355,11 +355,11 @@ pip install qdrant-client langchain-text-splitters \
 ### Step 1: Download Filings
 
 ```bash
-# Download all 40 filings (10 companies × 4 types)
-python scripts/download_filings.py
+# Download all filings
+python -m ingestion.scripts.download_filings
 
 # Or specific tickers
-python scripts/download_filings.py --tickers NVDA AMD INTC
+python -m ingestion.scripts.download_filings --tickers NVDA AMD INTC
 ```
 
 Output: `data/raw/NVDA_2024_10K.htm`, etc. (36 files, ~120 MB total)

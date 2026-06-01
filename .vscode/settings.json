@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^git status --short --branch && printf '\\\\n' && git branch --show-current && printf '\\\\n' && git remote -v$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git ls-remote --heads origin pipeline_integration && printf '\\\\n' && git branch --list pipeline_integration$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
