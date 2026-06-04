@@ -91,32 +91,35 @@ Run the same 1000 queries through different LLM generators to measure whether ge
 
 **Models used (all on Modal A100):**
 
-| Model | Size | Role | Why include | Hours on Modal |
-|-------|------|------|-------------|----------------|
-| `meta-llama/Llama-3.1-8B-Instruct` | 8B | Primary generator | Already run in E1, no re-run | 0 (reuse) |
-| `mistralai/Mistral-7B-Instruct-v0.3` | 7B | Comparison generator | Open-weight baseline from RESEARCH.md | ~6 |
-| `Qwen/Qwen2.5-7B-Instruct` | 7B | Comparison generator | Strongest 7B-class model. Makes comparison 3-way instead of 2-way — significantly more convincing | ~6 |
-| `meta-llama/Llama-3.1-70B-Instruct` | 70B | Stretch — subset only (100 queries) | Does a much larger generator change faithfulness rates? Interesting finding either way | ~2 |
+| Model | Arch | Size | Role | Why include | Hours on Modal |
+|-------|------|------|------|-------------|----------------|
+| `meta-llama/Llama-3.1-8B-Instruct` | Llama | 8B | Baseline generator | Already run in E1, no re-run | 0 (reuse) |
+| `deepseek-ai/DeepSeek-R1-Distill-Qwen-14B` | Qwen | 14B | Distilled reasoning | DeepSeek R1 reasoning patterns distilled into Qwen arch. Tests whether distilled CoT improves faithfulness | ~8 |
+| `microsoft/Phi-4-reasoning-plus` | Phi | 14B | Reasoning ceiling | Beats 70B models on AIME/GPQA at just 14B. If this STILL hallucinates → verification universally needed | ~8 |
+| `mistralai/Ministral-3-14B-Reasoning-2512` | Mistral | ~14B | Long-context reasoning | 256K context ingests more chunks. Highest AIME (89.8) in 14B class. Replaces weak Mistral-7B (57.6% halluc rate in RAGTruth) | ~8 |
+| `meta-llama/Llama-3.1-70B-Instruct` | Llama | 70B | Scale ceiling (100 queries) | Same arch as 8B but 10x params — does scale alone fix faithfulness? | ~2 |
 
-**Where each model runs:** All on Modal A100. This is your heaviest GPU experiment. Plan it for one full Modal session (~8-10 hours).
+**No duplicate architectures** — Llama, Qwen, Phi, Mistral each represented once. The 70B Llama shares arch with 8B but at 10x scale, answering a distinct question (scale vs reasoning).
+
+**Where each model runs:** All on Modal A100. This is your heaviest GPU experiment. Plan it for one full Modal session (~26 hours).
 
 **Team members needed:** 1 (person A runs Modal, person D can help with data validation)
 
-**Time:** ~8-10 hours on Modal A100 (Mistral + Qwen = ~6 hours for 1000 queries each; Llama 70B = ~2 hours for 100 queries)
+**Time:** ~26 hours on Modal A100 (3 × 14B models ≈ ~8 hours each for 1000 queries; Llama 70B = ~2 hours for 100 queries)
 
-**Output:** Separate audit files — `audit_mistral7b.jsonl`, `audit_qwen7b.jsonl`, `audit_llama70b_subset.jsonl`. Each has the same schema as E1 but with different `generator_model` field.
+**Output:** Separate audit files — `audit_deepseek_qwen14b.jsonl`, `audit_phi4_reasoning.jsonl`, `audit_ministral14b.jsonl`, `audit_llama70b_subset.jsonl`. Each has the same schema as E1 but with different `generator_model` field.
 
 **How to analyze:** For each domain, compute average faithfulness_score across generators. Create a table:
 
-| Domain | Llama 8B | Mistral 7B | Qwen 7B | Llama 70B (subset) |
-|--------|----------|------------|---------|---------------------|
-| Revenue | ? | ? | ? | ? |
-| Supply chain | ? | ? | ? | ? |
-| Risk factors | ? | ? | ? | ? |
-| Guidance | ? | ? | ? | ? |
-| Litigation | ? | ? | ? | ? |
+| Domain | Llama 8B | DeepSeek-Qwen 14B | Phi-4-reasoning 14B | Ministral 14B | Llama 70B (subset) |
+|--------|----------|--------------------|----------------------|---------------|---------------------|
+| Revenue | ? | ? | ? | ? | ? |
+| Supply chain | ? | ? | ? | ? | ? |
+| Risk factors | ? | ? | ? | ? | ? |
+| Guidance | ? | ? | ? | ? | ? |
+| Litigation | ? | ? | ? | ? | ? |
 
-If all generators show similar faithfulness patterns (e.g., revenue is always worst), the finding is "verification is needed regardless of generator quality" — your strongest paper contribution.
+If all generators show similar faithfulness patterns (e.g., revenue is always worst), the finding is "verification is needed regardless of generator quality or reasoning capability" — your strongest paper contribution. If the 14B reasoning models are better than 8B but still substantially hallucinate, you get the nuanced finding: "reasoning helps but doesn't solve the problem."
 
 ---
 
@@ -449,8 +452,9 @@ Where does every model run? One glance:
 |-------|----------|------|-------------|
 | **Generation (need GPU)** | | | |
 | Llama 3.1 8B Instruct | Modal A100 | Free (30hrs/month) | E1, E2 |
-| Mistral 7B Instruct v0.3 | Modal A100 | Free | E2 |
-| Qwen 2.5 7B Instruct | Modal A100 | Free | E2 |
+| DeepSeek-R1-Distill-Qwen-14B | Modal A100 | Free | E2 |
+| Phi-4-reasoning-plus | Modal A100 | Free | E2 |
+| Ministral-3-14B-Reasoning | Modal A100 | Free | E2 |
 | Llama 3.1 70B Instruct | Modal A100 | Free (subset only) | E2 |
 | **Verification (run locally)** | | | |
 | DeBERTa-v3-small | Local CPU | Free, ~20ms | E3 |
@@ -472,11 +476,12 @@ Where does every model run? One glance:
 | Model | Experiments | Hours on Modal |
 |-------|------------|----------------|
 | Llama 3.1 8B Instruct | E1, E2 | ~6 (E1) + 0 (E2 reuse) |
-| Mistral 7B Instruct v0.3 | E2 | ~6 |
-| Qwen 2.5 7B Instruct | E2 | ~6 |
+| DeepSeek-R1-Distill-Qwen-14B | E2 | ~8 |
+| Phi-4-reasoning-plus | E2 | ~8 |
+| Ministral-3-14B-Reasoning | E2 | ~8 |
 | Llama 3.1 70B Instruct | E2 (subset) | ~2 |
 
-Total GPU: ~20 hours (within 30hr/month free tier)
+Total GPU: ~32 hours (tight on 30hr/month free tier — run 14B models across 2 months, or use quantized 4-bit for 14B models to halve GPU time)
 
 ### NLI / Verification Models (Local CPU)
 
@@ -519,7 +524,9 @@ Total API cost: under $20 for all experiments.
 
 | Model | Why |
 |-------|-----|
-| `Qwen/Qwen2.5-7B-Instruct` | Strongest 7B-class generator. Makes generator comparison 3-way instead of 2-way |
+| `deepseek-ai/DeepSeek-R1-Distill-Qwen-14B` | DeepSeek R1 distilled reasoning into 14B Qwen arch. Tests whether distilled CoT improves faithfulness |
+| `microsoft/Phi-4-reasoning-plus` | Beats 70B models on AIME/GPQA at 14B. Reasoning ceiling for the ablation |
+| `mistralai/Ministral-3-14B-Reasoning-2512` | Highest AIME (89.8) in 14B class, 256K context. Replaces weak Mistral-7B (57.6% halluc rate) |
 | `vectara/hallucination_evaluation_model` (HHEM-2.1-Open) | Most direct competitor to your approach. Purpose-built hallucination detector. Beats GPT-4 on RAGTruth benchmark |
 | `ynie/roberta-large-snli_mnli_fever_anli_1_2_3` | Architectural diversity — RoBERTa vs DeBERTa vs BART vs T5. Shows DeBERTa is specifically good, not just "big models work" |
 
@@ -531,6 +538,8 @@ Total API cost: under $20 for all experiments.
 | SelfCheckGPT full investment | Include in comparison table only | Clearly impractical (3-5 generations/query, 10-30s, $3+/query). Don't invest more than a few hours |
 | NLI ablation on all 200 queries | Run on 100 human-annotated only | Without human labels you get scores but no accuracy measurement. Use ground truth |
 | `MoritzLaurer/DeBERTa-v3-large-zeroshot-v2` | Drop if team is short on time | Interesting but not essential. Zero-shot NLI is a different task. First model to cut |
+| `mistralai/Mistral-7B-Instruct-v0.3` | Replaced by Ministral-3-14B-Reasoning | Mistral-7B had highest hallucination rate in RAGTruth (57.6%). 14B reasoning model is a proper upgrade |
+| `Qwen/Qwen2.5-7B-Instruct` | Replaced by DeepSeek-R1-Distill-Qwen-14B | Same arch (Qwen) at 14B with distilled reasoning — strictly better for ablation |
 
 ---
 
@@ -540,13 +549,13 @@ Total API cost: under $20 for all experiments.
 |-------|---|---|---|---|----------|
 | 1: Dataset Gen | Modal monitor | Free | Free | Local setup | 6h Modal |
 | 2A: Annotation | Annotate 100 | Annotate 100 | Annotate 100 | Annotate 100 | 2-3 days |
-| 2B: Generator | Modal (Mistral+Qwen) | Free | Free | Free | 12h Modal |
+| 2B: Generator | Modal (DeepSeek-Qwen + Phi-4 + Ministral) | Free | Free | Free | 26h Modal |
 | 3: NLI + Approach | DeBERTa-sm/base | DeBERTa-lg/zeroshot | BART/RoBERTa | HHEM + API judges | 4h |
 | 4: Fine-tune | Modal fine-tune | Threshold + ROC | Cross-company test | Correlation analysis | 1 day |
 | 5: Latency | Voice runs | Voice runs | Text runs | Text runs | 3h |
 | 6: Analysis | All together | All together | All together | All together | 2 days |
 
-**Modal GPU hours used:** ~20 out of 30 available. Leaves buffer for re-runs.
+**Modal GPU hours used:** ~32 hours across 2 months (tight on 30hr/month — split across months or use 4-bit quantization for 14B models to fit in one month). Leaves small buffer for re-runs.
 **Total calendar time:** ~10-14 days working part-time, ~7 days working full-time.
 
 ### Execution Timeline with Deliverables
@@ -556,7 +565,7 @@ Total API cost: under $20 for all experiments.
 | 0 | 3-5 | Build pipeline | All | Working RAG + verifier + audit logger |
 | 1 | 1 | E1: Dataset gen | A (Modal), B/C (free), D (setup) | `audit.jsonl` with 1000 entries |
 | 2A | 2-3 | E5: Human annotation | B, C, D annotate; A free after Modal | Human labels for 100 examples, Fleiss' kappa |
-| 2B | 1 | E2: Generator comparison | A runs Modal (parallel with 2A) | `audit_mistral7b.jsonl`, `audit_qwen7b.jsonl`, `audit_llama70b_subset.jsonl` |
+| 2B | 1 | E2: Generator comparison | A runs Modal (parallel with 2A) | `audit_deepseek_qwen14b.jsonl`, `audit_phi4_reasoning.jsonl`, `audit_ministral14b.jsonl`, `audit_llama70b_subset.jsonl` |
 | 3 | 1 | E3 + E4: Verifier ablation + approach comparison | Split 4 ways (see table above) | Verifier comparison tables (Table 2 + money table) |
 | 4 | 1 | E7: Fine-tuned verifier | A (Modal), B (ROC), C (generalization), D (correlation) | FinFaithVerifier model + ROC + cross-company numbers |
 | 5 | 0.5 | E6: Latency overhead | A/B (voice), C/D (text) | Latency breakdown table |

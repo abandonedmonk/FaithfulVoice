@@ -1,0 +1,39 @@
+┌────────────────────────────────┬─────────────────────────────────────────────────────────┬─────────────────────┐
+│               id               │                          title                          │    readable_time    │
+├────────────────────────────────┼─────────────────────────────────────────────────────────┼─────────────────────┤
+│ ses_17c597c24ffeQwwINeK55lTlb4 │ eBPF implementation from inline test cases              │ 2026-06-01 14:46:28 │
+│ ses_17e75765cffel7K2gt2cNk36Er │ eBPF roadmap planning                                   │ 2026-06-01 04:56:40 │
+│ ses_19d00a93fffed6bp75uLARwaqR │ Cloud deployment steps from roadmap.md                  │ 2026-05-26 06:36:01 │
+│ ses_1a2f198d7ffef48tbQRG5Z0nhn │ Explore PRISM codebase structure (@explore subagent)    │ 2026-05-25 02:54:45 │
+│ ses_1a2f1adc4ffePuc9HRmWoPvlhm │ Hybrid RAG graph indexing question                      │ 2026-05-25 02:54:40 │
+│ ses_1a5ebd735ffeE2buiaVfkBCmAp │ SEC table extraction & Neo4j graph RAG plan (fork #1)   │ 2026-05-24 13:02:11 │
+│ ses_1a5ebdc75ffeyHMl30ZhP8HxqM │ SEC table extraction & Neo4j graph RAG plan (fork #1)   │ 2026-05-24 13:02:09 │
+│ ses_1a6531f65ffe85HAGGl6qqrlgk │ Explore full project structure (@explore subagent)      │ 2026-05-24 11:09:22 │
+│ ses_1a6533b26ffeFH3GZl2KdJdlio │ README update with architecture diagrams                │ 2026-05-24 11:09:15 │
+│ ses_1a9cc0cd9ffepVLI4ioUJgKXbv │ SEC table extraction & Neo4j graph RAG plan             │ 2026-05-23 18:58:25 │
+│ ses_1ab304500ffeUMIbVQa9R2uj2N │ Project structure setup with venv and gitignore         │ 2026-05-23 12:29:20 │
+│ ses_1ac38641affeRIBmp0MrvU12rj │ EC2 SSH host key error + API unreachable                │ 2026-05-23 07:40:51 │
+│ ses_1afbe1fc3ffeykYNYCbFVtZY4I │ Audit Phase 1-8 Implementation (@explore subagent)      │ 2026-05-22 15:15:55 │
+│ ses_1c3e6e607ffeCIF9Dh8vRYvh4v │ Verify Phase 1 & 2 completion (@explore subagent)       │ 2026-05-18 17:18:58 │
+│ ses_1c8677e81ffeOmqj2cZDByBGuD │ Research AWS free tier MLOps (@general subagent)        │ 2026-05-17 20:20:02 │
+│ ses_1c8679b39ffea736GTLC3HHq01 │ Explore repo structure thoroughly (@explore subagent)   │ 2026-05-17 20:19:54 │
+│ ses_1c867ca75ffeB3TEb6rBIqmy4n │ AWS migration plan for MLOps pipeline                   │ 2026-05-17 20:19:42 │
+│ ses_1e8822cabffeIPXYwwYsJSKgQJ │ BharatGen IITB DSA interview 10-day prep plan           │ 2026-05-11 14:43:02 │
+│ ses_1f2137dadffe80vMKI32kD36wC │ CorpMind capstone: RAG, agents, vLLM, EKS deployment    │ 2026-05-09 18:07:44 │
+│ ses_1f24a91f5ffeAj55QTzOd1XZfQ │ Modal vLLM deployment plan for capstone                 │ 2026-05-09 17:07:34 │
+│ ses_1f2816f10ffefsttS37gB2Th8b │ Research Modal vLLM serving (@general subagent)         │ 2026-05-09 16:07:38 │
+│ ses_1f2821940ffeNNRFKRfqJwvCw2 │ Modal LLM inference project plan                        │ 2026-05-09 16:06:55 │
+│ ses_1f7177e31ffeQSdJlLJ96oF8pW │ Research Ubuntu eBPF setup (@explore subagent)          │ 2026-05-08 18:45:15 │
+│ ses_1f717a46fffeYYf4g8KLi4YYes │ Research Aya eBPF framework (@explore subagent)         │ 2026-05-08 18:45:06 │
+│ ses_1fca53be8ffe5J6bNLac5VNAEo │ Research LangGraph framework (@general subagent)        │ 2026-05-07 16:52:20 │
+│ ses_1fca54679ffetqpUmq87lmVfNr │ Research Rig framework (@general subagent)              │ 2026-05-07 16:52:17 │
+│ ses_1fca57b7effeLkhLAjROJn7KgB │ Rig vs LangGraph for NOS AI Agents                      │ 2026-05-07 16:52:04 │
+│ ses_206f56252ffe9iEtMvDPEfPExa │ Research Sony YOLOX export (@explore subagent)          │ 2026-05-05 16:48:35 │
+│ ses_207844b31ffe8vNVZK7RBlqJvQ │ YOLOv8n MCT PTQ notebook rewrite                        │ 2026-05-05 14:12:30 │
+│ ses_211c653d4ffebmY91Y80s54pMA │ Research Nix vs alternatives for AI (@general subagent) │ 2026-05-03 14:24:10 │
+│ ses_211c8e85affeN6j2EonkkE7rup │ Research AI agent isolation (@general subagent)         │ 2026-05-03 14:21:21 │
+│ ses_2121c5957ffeHwDF4f7gQ1SDQB │ Research code sandboxing (@general subagent)            │ 2026-05-03 12:50:12 │
+│ ses_21256d6e8ffecD6Ap8Z5g2R1ym │ New session - 2026-05-03T11:46:19.543Z                  │ 2026-05-03 11:46:19 │
+│ ses_2134a1dfbffek8Jn2OjvJ5RCzB │ LLM RAG Help                                            │ 2026-05-03 07:20:36 │
+│ ses_213ef2972ffezvB9wieylgjvlQ │ WASM eBPF connection                                    │ 2026-05-03 04:20:19 │
+└────────────────────────────────┴─────────────────────────────────────────────────────────┴─────────────────────┘
