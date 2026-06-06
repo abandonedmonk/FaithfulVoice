@@ -49,15 +49,14 @@ def _date_to_quarter(date_str: str) -> tuple[int, int]:
     return year, (month - 1) // 3 + 1
 
 
-def find_filing(submissions: dict, spec: dict) -> dict | None:
-    recent = submissions["filings"]["recent"]
+def _search_filings_array(filings_array: dict, spec: dict) -> dict | None:
     form = spec["form"]
     selector = spec["selector"]
 
-    for i, f in enumerate(recent["form"]):
+    for i, f in enumerate(filings_array["form"]):
         if f != form:
             continue
-        report_date = recent["reportDate"][i]
+        report_date = filings_array["reportDate"][i]
         if not report_date:
             continue
         ry, rq = _date_to_quarter(report_date)
@@ -65,19 +64,42 @@ def find_filing(submissions: dict, spec: dict) -> dict | None:
         if selector == "report_year":
             if ry == spec["year"]:
                 return {
-                    "accessionNumber": recent["accessionNumber"][i],
-                    "filingDate": recent["filingDate"][i],
-                    "primaryDocument": recent["primaryDocument"][i],
+                    "accessionNumber": filings_array["accessionNumber"][i],
+                    "filingDate": filings_array["filingDate"][i],
+                    "primaryDocument": filings_array["primaryDocument"][i],
                     "reportDate": report_date,
                 }
         elif selector == "report_quarter":
             if ry == spec["year"] and rq == spec["quarter"]:
                 return {
-                    "accessionNumber": recent["accessionNumber"][i],
-                    "filingDate": recent["filingDate"][i],
-                    "primaryDocument": recent["primaryDocument"][i],
+                    "accessionNumber": filings_array["accessionNumber"][i],
+                    "filingDate": filings_array["filingDate"][i],
+                    "primaryDocument": filings_array["primaryDocument"][i],
                     "reportDate": report_date,
                 }
+    return None
+
+
+def find_filing(submissions: dict, spec: dict) -> dict | None:
+    result = _search_filings_array(submissions["filings"]["recent"], spec)
+    if result:
+        return result
+
+    for archive_file in submissions["filings"].get("files", []):
+        name = archive_file["name"]
+        url = f"https://data.sec.gov/submissions/{name}"
+        try:
+            r = requests.get(url, headers=API_HEADERS, timeout=30)
+            r.raise_for_status()
+            archive_data = r.json()
+            result = _search_filings_array(archive_data, spec)
+            if result:
+                print(f"    (found in archive {name})")
+                return result
+            time.sleep(0.1)
+        except Exception:
+            continue
+
     return None
 
 

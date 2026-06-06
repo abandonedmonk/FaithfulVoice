@@ -1,4 +1,5 @@
 import re
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
@@ -30,17 +31,44 @@ def _detect_section(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _inject_toc_markers(soup: BeautifulSoup, toc: dict) -> bool:
+    injected = False
+    for div_id, info in toc.items():
+        target = soup.find(id=div_id)
+        if target:
+            marker = soup.new_tag("p")
+            marker.string = info["toc_text"]
+            target.append(marker)
+            injected = True
+    return injected
+
+
 def parse_filing(cleaned_path: str | Path) -> list[ParsedElement]:
     cleaned_path = Path(cleaned_path)
-    elements = partition_html(
-        filename=str(cleaned_path),
-        skip_headers_and_footers=True,
-        include_metadata=True,
-    )
 
     with open(cleaned_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml")
     toc = build_toc_map(soup)
+
+    if toc and _inject_toc_markers(soup, toc):
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".htm", delete=False, mode="w", encoding="utf-8"
+        )
+        tmp.write(str(soup))
+        tmp.close()
+        parse_path = tmp.name
+    else:
+        parse_path = str(cleaned_path)
+
+    try:
+        elements = partition_html(
+            filename=parse_path,
+            skip_headers_and_footers=True,
+            include_metadata=True,
+        )
+    finally:
+        if parse_path != str(cleaned_path):
+            Path(parse_path).unlink(missing_ok=True)
 
     parsed: list[ParsedElement] = []
     current_anchor = "cover"

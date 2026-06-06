@@ -68,7 +68,9 @@ def _extract_table_markdown(text: str) -> str:
     return ""
 
 
-def _group_by_section(elements: list[ParsedElement]) -> list[tuple[str, str, list[ParsedElement]]]:
+def _group_by_section(elements: list[ParsedElement], skip_anchors: set[str] | None = None) -> list[tuple[str, str, list[ParsedElement]]]:
+    if skip_anchors is None:
+        skip_anchors = SKIP_ANCHORS
     groups = []
     current_anchor = None
     current_section = None
@@ -76,14 +78,14 @@ def _group_by_section(elements: list[ParsedElement]) -> list[tuple[str, str, lis
 
     for el in elements:
         if el.anchor_id != current_anchor:
-            if current_elements and current_anchor not in SKIP_ANCHORS:
+            if current_elements and current_anchor not in skip_anchors:
                 groups.append((current_anchor, current_section, current_elements))
             current_anchor = el.anchor_id
             current_section = el.section
             current_elements = []
         current_elements.append(el)
 
-    if current_elements and current_anchor not in SKIP_ANCHORS:
+    if current_elements and current_anchor not in skip_anchors:
         groups.append((current_anchor, current_section, current_elements))
 
     return groups

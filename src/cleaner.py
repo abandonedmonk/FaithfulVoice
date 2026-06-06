@@ -40,8 +40,16 @@ BOILERPLATE_PATTERNS = [
 ]
 
 
-def clean_edgar_html(filepath: str | Path) -> str:
+CLEANED_DIR = Path(__file__).parent.parent / "data" / "cleaned"
+
+
+def clean_edgar_html(filepath: str | Path, cleaned_dir: str | Path | None = None) -> str:
     filepath = Path(filepath)
+    if cleaned_dir is None:
+        cleaned_dir = CLEANED_DIR
+    cleaned_dir = Path(cleaned_dir)
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+
     with open(filepath, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml")
 
@@ -55,13 +63,14 @@ def clean_edgar_html(filepath: str | Path) -> str:
     if ix_header:
         ix_header.decompose()
 
-    cleaned_path = str(filepath).replace(".htm", "_clean.htm")
+    cleaned_name = filepath.stem + "_clean.htm"
+    cleaned_path = cleaned_dir / cleaned_name
     with open(cleaned_path, "w", encoding="utf-8") as f:
         f.write(str(soup))
-    return cleaned_path
+    return str(cleaned_path)
 
 
-def build_toc_map(soup: BeautifulSoup) -> dict[str, str]:
+def _build_toc_from_links(soup: BeautifulSoup) -> dict[str, dict]:
     toc = {}
     toc_links = soup.find_all("a", string=re.compile(r"item\s*\d+[a-z]?", re.I))
     for a_tag in toc_links:
@@ -78,6 +87,133 @@ def build_toc_map(soup: BeautifulSoup) -> dict[str, str]:
                     }
                     break
     return toc
+
+
+def _build_toc_from_table(soup: BeautifulSoup) -> dict[str, dict]:
+    toc = {}
+    for tr in soup.find_all("tr"):
+        item_span = None
+        for span in tr.find_all("span"):
+            text = span.get_text(strip=True)
+            if re.match(r"(?i)item\s*\d+[a-z]?[\.\s]", text):
+                item_span = span
+                break
+        if not item_span:
+            continue
+
+        item_text = item_span.get_text(strip=True)
+
+        section_name = ""
+        for td in tr.find_all("td"):
+            td_text = td.get_text(strip=True)
+            if (
+                td_text
+                and td_text != item_text
+                and not re.match(r"^(Pages?|Not applicable|\d+)$", td_text, re.I)
+            ):
+                section_name = td_text
+                break
+
+        a_tag = tr.find("a", href=re.compile(r"^#"))
+        target_id = ""
+        if a_tag and a_tag.get("href", "").startswith("#"):
+            target_id = a_tag.get("href")[1:]
+
+        full_header = f"{item_text} {section_name}".strip() if section_name else item_text
+
+        for pattern, anchor_id, section_label in SECTION_PATTERNS:
+            if pattern.search(item_text):
+                if target_id:
+                    toc[target_id] = {
+                        "anchor_id": anchor_id,
+                        "section": section_label,
+                        "toc_text": full_header,
+                    }
+                break
+        break
+
+    return toc
+
+
+def _build_toc_from_anchor_divs(soup: BeautifulSoup) -> dict[str, dict]:
+    toc = {}
+    body = soup.body or soup
+
+    item_order = [info[1] for info in SECTION_PATTERNS]
+    toc_items_ordered = []
+
+    for tr in soup.find_all("tr"):
+        for span in tr.find_all("span"):
+            text = span.get_text(strip=True)
+            if re.match(r"(?i)item\s*\d+[a-z]?[\.\s]", text):
+                for pattern, anchor_id, section_label in SECTION_PATTERNS:
+                    if pattern.search(text):
+                        toc_items_ordered.append({
+                            "anchor_id": anchor_id,
+                            "section": section_label,
+                            "item_text": text,
+                        })
+                        break
+                break
+
+    toc_item_idx = 0
+    for div in body.find_all("div", recursive=False):
+        div_id = div.get("id", "")
+        if not div_id:
+            continue
+        text_len = len(div.get_text(strip=True))
+        if text_len > 0:
+            continue
+
+        next_sib = div.find_next_sibling()
+        if not next_sib:
+            continue
+        sib_text = next_sib.get_text(strip=True)
+
+        if not sib_text:
+            sib2 = next_sib.find_next_sibling()
+            if sib2:
+                sib_text = sib2.get_text(strip=True)
+
+        matched_anchor = None
+        matched_section = None
+
+        for pattern, anchor_id, section_label in SECTION_PATTERNS:
+            if pattern.search(sib_text):
+                matched_anchor = anchor_id
+                matched_section = section_label
+                break
+
+        if matched_anchor:
+            toc[div_id] = {
+                "anchor_id": matched_anchor,
+                "section": matched_section,
+                "toc_text": sib_text[:120],
+            }
+        elif toc_item_idx < len(toc_items_ordered):
+            item_info = toc_items_ordered[toc_item_idx]
+            toc[div_id] = {
+                "anchor_id": item_info["anchor_id"],
+                "section": item_info["section"],
+                "toc_text": item_info["item_text"],
+            }
+
+        if matched_anchor or toc_item_idx < len(toc_items_ordered):
+            toc_item_idx += 1
+
+    return toc
+
+
+def build_toc_map(soup: BeautifulSoup) -> dict[str, dict]:
+    toc = _build_toc_from_links(soup)
+    if toc:
+        return toc
+
+    toc = _build_toc_from_table(soup)
+    if toc:
+        return toc
+
+    return _build_toc_from_anchor_divs(soup)
 
 
 def extract_sections(soup: BeautifulSoup) -> list[dict]:

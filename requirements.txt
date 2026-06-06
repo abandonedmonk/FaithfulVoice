@@ -1,0 +1,13 @@
+qdrant-client
+langchain-text-splitters
+beautifulsoup4
+lxml
+pandas
+requests
+fastembed
+unstructured
+sentence-transformers
+spacy
+scipy
+pyyaml
+openai

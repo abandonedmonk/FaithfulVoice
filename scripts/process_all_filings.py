@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 from dataclasses import asdict
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from src.cleaner import clean_edgar_html
 from src.chunker import chunk_filing
 
