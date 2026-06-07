@@ -219,6 +219,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# extras and venv
-finnlp
-qdrant_storage
+# Project-specific
+finnlp/
+qdrant_storage/
+data/raw/*.htm
+data/cleaned/*.htm
+src/__pycache__/
