@@ -11,3 +11,4 @@ spacy
 scipy
 pyyaml
 openai
+modal
